@@ -63,7 +63,7 @@ typedef struct _Block {
  *
  * It takes in k equal-sized blocks and produces m equal-sized recovery blocks.
  * The input block pointer array allows more natural usage of the library.
- * The output recovery blocks are stored in each of the pointers in the recovery_blocks array.
+ * The output recovery blocks are stored end-to-end in the recovery_blocks.
  *
  * The number of bytes per block (block_bytes) should be a multiple of 8.
  *
@@ -75,8 +75,7 @@ typedef struct _Block {
  *
  * Returns 0 on success, and any other code indicates failure.
  */
-extern int cauchy_256_encode(int k, int m, const unsigned char *data_ptrs[], unsigned char *recovery_blocks[], int block_bytes);
-
+extern int cauchy_256_encode(int k, int m, const unsigned char *data_ptrs[], void *recovery_blocks, int block_bytes);
 
 /*
  * Cauchy decode

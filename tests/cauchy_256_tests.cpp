@@ -46,11 +46,6 @@ int order_test() {
 		data_ptrs[ii] = &data[ii * block_bytes];
 	}
 
-    uint8_t *recovery_ptrs[256];
-	for (unsigned ii = 0; ii < recovery_block_count; ++ii) {
-		recovery_ptrs[ii] = &recovery_blocks[ii * block_bytes];
-	}
-
 	for (unsigned ii = 0; ii < block_bytes * block_count; ++ii) {
 		data[ii] = (uint8_t)prng.Next();
 	}
@@ -59,7 +54,7 @@ int order_test() {
         block_count,
         recovery_block_count,
         data_ptrs,
-        recovery_ptrs,
+        &recovery_blocks[0],
         block_bytes);
     if (encodeResult != 0)
     {
@@ -153,11 +148,6 @@ int main() {
 				data_ptrs[ii] = &data[ii * block_bytes];
 			}
 
-            uint8_t *recovery_ptrs[256];
-            for (unsigned ii = 0; ii < recovery_block_count; ++ii) {
-                recovery_ptrs[ii] = &recovery_blocks[ii * block_bytes];
-            }
-
             uint64_t sum_encode = 0;
 
 			unsigned erasures_count;
@@ -181,7 +171,7 @@ int main() {
                     block_count,
                     recovery_block_count,
                     data_ptrs,
-                    recovery_ptrs,
+                    &recovery_blocks[0],
                     block_bytes);
                 if (encodeResult != 0)
                 {

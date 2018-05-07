@@ -1396,7 +1396,7 @@ extern "C" int cauchy_256_decode(int k, int m, Block *blocks, int block_bytes)
 
 // Windowed version of encoder
 static void win_encode(int k, int m, const uint8_t *matrix, int stride,
-                       const uint8_t **data, uint8_t **recovery_blocks, int subbytes)
+                       const uint8_t **data, uint8_t *out, int subbytes)
 {
     uint8_t *precomp = new uint8_t[subbytes * PRECOMP_TABLE_SIZE * 2];
     uint8_t *table_stack[16 * 2] = {0};
@@ -1445,9 +1445,9 @@ static void win_encode(int k, int m, const uint8_t *matrix, int stride,
         }
 
         // For each of the rows,
+        uint8_t *dest = out;
         for (int y = 1; y < m; ++y, row += stride) {
             uint8_t slice = row[0];
-            uint8_t *dest = recovery_blocks[y];
 
             // Generate 8x8 submatrix and XOR in bits as needed
             for (int bit_y = 0;; ++bit_y) {
@@ -1477,24 +1477,26 @@ static void win_encode(int k, int m, const uint8_t *matrix, int stride,
 }
 
 extern "C" int cauchy_256_encode(int k, int m, const uint8_t *data[],
-                                 uint8_t *recovery_blocks[], int block_bytes)
+                                 void *vrecovery_blocks, int block_bytes)
 {
+    uint8_t *recovery_blocks = reinterpret_cast<uint8_t *>( vrecovery_blocks );
+
     // If only one input block,
     if (k <= 1) {
         // For each output block,
-        for (int ii = 0; ii < m; ++ii) {
+        for (int ii = 0; ii < m; ++ii, recovery_blocks += block_bytes) {
             // Copy it directly to output
-            memcpy(recovery_blocks[ii], data[0], block_bytes);
+            memcpy(recovery_blocks, data[0], block_bytes);
         }
 
         return 0;
     }
 
     // XOR all input blocks together
-    gf256_addset_mem(recovery_blocks[0], data[0], data[1], block_bytes);
+    gf256_addset_mem(recovery_blocks, data[0], data[1], block_bytes);
 
     for (int x = 2; x < k; ++x) {
-        gf256_add_mem(recovery_blocks[0], data[x], block_bytes);
+        gf256_add_mem(recovery_blocks, data[x], block_bytes);
     }
 
     // If only one recovery block needed,
@@ -1521,30 +1523,29 @@ extern "C" int cauchy_256_encode(int k, int m, const uint8_t *data[],
     // with a bitmatrix.  In fact the initial XOR for m=1 case has already
     // taken care of these bitmatrix rows.
 
+    // Start on the second recovery block
+    uint8_t *out = recovery_blocks + block_bytes;
     const int subbytes = block_bytes >> 3;
 
     // Clear output buffer
-    // Start on the second block.
-    for (int i = 1; i < m; i++) {
-        memset(recovery_blocks[i], 0, block_bytes);
-    }
+    memset(out, 0, block_bytes * (m - 1));
 
     // If the number of symbols to generate gets larger,
     if (m > 4) {
         // Start using a windowed approach to encoding
-        win_encode(k, m, matrix, stride, data, recovery_blocks, subbytes);
+        win_encode(k, m, matrix, stride, data, out, subbytes);
     } else {
         const uint8_t *row = matrix;
 
         // For each remaining row to generate,
-        for (int y = 1; y < m; ++y, row += stride) {
+        for (int y = 1; y < m; ++y, row += stride, out += block_bytes) {
             const uint8_t *column = row;
 
             // For each symbol column,
             for (int x = 0; x < k; ++x, ++column) {
                 const uint8_t *src = data[x];
                 uint8_t slice = column[0];
-                uint8_t *dest = recovery_blocks[y];
+                uint8_t *dest = out;
 
                 DLOG(cout << "ENCODE: Using " << (int)slice << " at " << x << ", " << y << endl;)
 
