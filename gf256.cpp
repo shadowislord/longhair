@@ -37,6 +37,25 @@
 #endif
 
 //------------------------------------------------------------------------------
+// Workaround for ARMv7 that doesn't provide vqtbl1_*
+// This comes from linux-raid (https://www.spinics.net/lists/raid/msg58403.html)
+//
+#ifdef GF256_TRY_NEON
+#if __ARM_ARCH <= 7 && !defined(__aarch64__)
+static GF256_FORCE_INLINE uint8x16_t vqtbl1q_u8(uint8x16_t a, uint8x16_t b)
+{
+    union {
+        uint8x16_t    val;
+        uint8x8x2_t    pair;
+    } __a = { a };
+
+    return vcombine_u8(vtbl2_u8(__a.pair, vget_low_u8(b)),
+                       vtbl2_u8(__a.pair, vget_high_u8(b)));
+}
+#endif
+#endif
+
+//------------------------------------------------------------------------------
 // Self-Test
 //
 // This is executed during initialization to make sure the library is working
@@ -157,6 +176,160 @@ static bool gf256_self_test()
 
     return true;
 }
+
+
+//------------------------------------------------------------------------------
+// Runtime CPU Architecture Check
+//
+// Feature checks stolen shamelessly from
+// https://github.com/jedisct1/libsodium/blob/master/src/libsodium/sodium/runtime.c
+
+#if defined(HAVE_ANDROID_GETCPUFEATURES)
+#include <cpu-features.h>
+#endif
+
+#if defined(GF256_TRY_NEON)
+# if defined(IOS) && defined(__ARM_NEON__)
+// Requires iPhone 5S or newer
+static const bool CpuHasNeon = true;
+static const bool CpuHasNeon64 = true;
+# else // ANDROID or LINUX_ARM
+#  if defined(__aarch64__)
+static bool CpuHasNeon = true;      // if AARCH64, then we have NEON for sure...
+static bool CpuHasNeon64 = true;    // And we have ASIMD
+#  else
+static bool CpuHasNeon = false;     // if not, then we have to check at runtime.
+static bool CpuHasNeon64 = false;   // And we don't have ASIMD
+#  endif
+# endif
+#endif
+
+#if !defined(GF256_TARGET_MOBILE)
+
+#ifdef _MSC_VER
+    #include <intrin.h> // __cpuid
+    #pragma warning(disable: 4752) // found Intel(R) Advanced Vector Extensions; consider using /arch:AVX
+#endif
+
+#ifdef GF256_TRY_AVX2
+static bool CpuHasAVX2 = false;
+#endif
+static bool CpuHasSSSE3 = false;
+
+#define CPUID_EBX_AVX2    0x00000020
+#define CPUID_ECX_SSSE3   0x00000200
+
+static void _cpuid(unsigned int cpu_info[4U], const unsigned int cpu_info_type)
+{
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_AMD64) || defined(_M_IX86))
+    __cpuid((int *) cpu_info, cpu_info_type);
+#else //if defined(HAVE_CPUID)
+    cpu_info[0] = cpu_info[1] = cpu_info[2] = cpu_info[3] = 0;
+# ifdef __i386__
+    __asm__ __volatile__ ("pushfl; pushfl; "
+                          "popl %0; "
+                          "movl %0, %1; xorl %2, %0; "
+                          "pushl %0; "
+                          "popfl; pushfl; popl %0; popfl" :
+                          "=&r" (cpu_info[0]), "=&r" (cpu_info[1]) :
+                          "i" (0x200000));
+    if (((cpu_info[0] ^ cpu_info[1]) & 0x200000) == 0) {
+        return; /* LCOV_EXCL_LINE */
+    }
+# endif
+# ifdef __i386__
+    __asm__ __volatile__ ("xchgl %%ebx, %k1; cpuid; xchgl %%ebx, %k1" :
+                          "=a" (cpu_info[0]), "=&r" (cpu_info[1]),
+                          "=c" (cpu_info[2]), "=d" (cpu_info[3]) :
+                          "0" (cpu_info_type), "2" (0U));
+# elif defined(__x86_64__)
+    __asm__ __volatile__ ("xchgq %%rbx, %q1; cpuid; xchgq %%rbx, %q1" :
+                          "=a" (cpu_info[0]), "=&r" (cpu_info[1]),
+                          "=c" (cpu_info[2]), "=d" (cpu_info[3]) :
+                          "0" (cpu_info_type), "2" (0U));
+# else
+    __asm__ __volatile__ ("cpuid" :
+                          "=a" (cpu_info[0]), "=b" (cpu_info[1]),
+                          "=c" (cpu_info[2]), "=d" (cpu_info[3]) :
+                          "0" (cpu_info_type), "2" (0U));
+# endif
+#endif
+}
+
+#else
+#if defined(LINUX_ARM)
+static void checkLinuxARMNeonCapabilities( bool& cpuHasNeon )
+{
+    auto cpufile = open("/proc/self/auxv", O_RDONLY);
+    Elf32_auxv_t auxv;
+    if (cpufile >= 0)
+    {
+        const auto size_auxv_t = sizeof(Elf32_auxv_t);
+        while (read(cpufile, &auxv, size_auxv_t) == size_auxv_t)
+        {
+            if (auxv.a_type == AT_HWCAP)
+            {
+                cpuHasNeon = (auxv.a_un.a_val & 4096) != 0;
+                break;
+            }
+        }
+        close(cpufile);
+    }
+    else
+    {
+        cpuHasNeon = false;
+    }
+}
+#endif
+#endif // defined(GF256_TARGET_MOBILE)
+
+static void gf256_architecture_init()
+{
+#if defined(GF256_TRY_NEON)
+
+    // Check for NEON support on Android platform
+#if defined(HAVE_ANDROID_GETCPUFEATURES)
+    AndroidCpuFamily family = android_getCpuFamily();
+    if (family == ANDROID_CPU_FAMILY_ARM)
+    {
+        if (android_getCpuFeatures() & ANDROID_CPU_ARM_FEATURE_NEON)
+            CpuHasNeon = true;
+    }
+    else if (family == ANDROID_CPU_FAMILY_ARM64)
+    {
+        CpuHasNeon = true;
+        if (android_getCpuFeatures() & ANDROID_CPU_ARM64_FEATURE_ASIMD)
+            CpuHasNeon64 = true;
+    }
+#endif
+
+#if defined(LINUX_ARM)
+    // Check for NEON support on other ARM/Linux platforms
+    checkLinuxARMNeonCapabilities(CpuHasNeon);
+#endif
+
+#endif //GF256_TRY_NEON
+
+#if !defined(GF256_TARGET_MOBILE)
+    unsigned int cpu_info[4];
+
+    _cpuid(cpu_info, 1);
+    CpuHasSSSE3 = ((cpu_info[2] & CPUID_ECX_SSSE3) != 0);
+
+#if defined(GF256_TRY_AVX2)
+    _cpuid(cpu_info, 7);
+    CpuHasAVX2 = ((cpu_info[1] & CPUID_EBX_AVX2) != 0);
+#endif // GF256_TRY_AVX2
+
+    // When AVX2 and SSSE3 are unavailable, Siamese takes 4x longer to decode
+    // and 2.6x longer to encode.  Encoding requires a lot more simple XOR ops
+    // so it is still pretty fast.  Decoding is usually really quick because
+    // average loss rates are low, but when needed it requires a lot more
+    // GF multiplies requiring table lookups which is slower.
+
+#endif // GF256_TARGET_MOBILE
+}
+
 
 //------------------------------------------------------------------------------
 // Context Object
@@ -386,6 +559,28 @@ static void gf256_mul_mem_init()
             lo[x] = gf256_mul(x, static_cast<uint8_t>( y ));
             hi[x] = gf256_mul(x << 4, static_cast<uint8_t>( y ));
         }
+
+#if defined(GF256_TRY_NEON)
+        if (CpuHasNeon)
+        {
+            GF256Ctx.MM128.TABLE_LO_Y[y] = vld1q_u8(lo);
+            GF256Ctx.MM128.TABLE_HI_Y[y] = vld1q_u8(hi);
+        }
+#elif !defined(GF256_TARGET_MOBILE)
+        const GF256_M128 table_lo = _mm_loadu_si128((GF256_M128*)lo);
+        const GF256_M128 table_hi = _mm_loadu_si128((GF256_M128*)hi);
+        _mm_storeu_si128(GF256Ctx.MM128.TABLE_LO_Y + y, table_lo);
+        _mm_storeu_si128(GF256Ctx.MM128.TABLE_HI_Y + y, table_hi);
+# ifdef GF256_TRY_AVX2
+        if (CpuHasAVX2)
+        {
+            const GF256_M256 table_lo2 = _mm256_broadcastsi128_si256(table_lo);
+            const GF256_M256 table_hi2 = _mm256_broadcastsi128_si256(table_hi);
+            _mm256_storeu_si256(GF256Ctx.MM256.TABLE_LO_Y + y, table_lo2);
+            _mm256_storeu_si256(GF256Ctx.MM256.TABLE_HI_Y + y, table_hi2);
+        }
+# endif // GF256_TRY_AVX2
+#endif // GF256_TARGET_MOBILE
     }
 }
 
@@ -422,6 +617,7 @@ extern "C" int gf256_init_(int version)
     if (!IsLittleEndian())
         return -2; // Architecture is not supported (code won't work without mods).
 
+    gf256_architecture_init();
     gf256_poly_init(kDefaultPolynomialIndex);
     gf256_explog_init();
     gf256_muldiv_init();
