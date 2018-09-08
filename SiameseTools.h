@@ -42,7 +42,6 @@
 
 #include <stdint.h> // uint32_t
 #include <string.h> // memcpy
-#include <new> // std::nothrow
 
 
 //------------------------------------------------------------------------------

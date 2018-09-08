@@ -45,7 +45,7 @@
 */
 
 #include <stdint.h> // uint32_t etc
-#include <cstring> // memcpy, memset
+#include <string.h> // memcpy, memset
 
 /// Library header version
 #define GF256_VERSION 2
